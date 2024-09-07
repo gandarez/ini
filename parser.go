@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -30,15 +31,16 @@ const minReaderBufferSize = 4096
 var pythonMultiline = regexp.MustCompile(`^([\t\f ]+)(.*)`)
 
 type parserOptions struct {
+	AllowPythonMultilineValues  bool
+	DebugFunc                   DebugFunc
 	IgnoreContinuation          bool
 	IgnoreInlineComment         bool
-	AllowPythonMultilineValues  bool
-	SpaceBeforeInlineComment    bool
-	UnescapeValueDoubleQuotes   bool
-	UnescapeValueCommentSymbols bool
 	PreserveSurroundedQuote     bool
-	DebugFunc                   DebugFunc
+	PythonMultilineValuesKeys   []string
 	ReaderBufferSize            int
+	SpaceBeforeInlineComment    bool
+	UnescapeValueCommentSymbols bool
+	UnescapeValueDoubleQuotes   bool
 }
 
 type parser struct {
@@ -225,11 +227,11 @@ func hasSurroundedQuote(in string, quote byte) bool {
 		strings.IndexByte(in[1:], quote) == len(in)-2
 }
 
-func (p *parser) readValue(in []byte, bufferSize int) (string, error) {
+func (p *parser) readValue(in []byte, bufferSize int, kname string) (string, error) {
 
 	line := strings.TrimLeftFunc(string(in), unicode.IsSpace)
 	if len(line) == 0 {
-		if p.options.AllowPythonMultilineValues && len(in) > 0 && in[len(in)-1] == '\n' {
+		if p.isPythonMultilineValueAllowed(kname) && len(in) > 0 && in[len(in)-1] == '\n' {
 			return p.readPythonMultilines(line, bufferSize)
 		}
 		return "", nil
@@ -295,7 +297,7 @@ func (p *parser) readValue(in []byte, bufferSize int) (string, error) {
 	} else if len(valQuote) == 0 && p.options.UnescapeValueCommentSymbols {
 		line = strings.ReplaceAll(line, `\;`, ";")
 		line = strings.ReplaceAll(line, `\#`, "#")
-	} else if p.options.AllowPythonMultilineValues && lastChar == '\n' {
+	} else if p.isPythonMultilineValueAllowed(kname) && lastChar == '\n' {
 		return p.readPythonMultilines(line, bufferSize)
 	}
 
@@ -341,15 +343,16 @@ func (p *parser) readPythonMultilines(line string, bufferSize int) (string, erro
 // parse parses data through an io.Reader.
 func (f *File) parse(reader io.Reader) (err error) {
 	p := newParser(reader, parserOptions{
+		AllowPythonMultilineValues:  f.options.AllowPythonMultilineValues,
+		DebugFunc:                   f.options.DebugFunc,
 		IgnoreContinuation:          f.options.IgnoreContinuation,
 		IgnoreInlineComment:         f.options.IgnoreInlineComment,
-		AllowPythonMultilineValues:  f.options.AllowPythonMultilineValues,
-		SpaceBeforeInlineComment:    f.options.SpaceBeforeInlineComment,
-		UnescapeValueDoubleQuotes:   f.options.UnescapeValueDoubleQuotes,
-		UnescapeValueCommentSymbols: f.options.UnescapeValueCommentSymbols,
 		PreserveSurroundedQuote:     f.options.PreserveSurroundedQuote,
-		DebugFunc:                   f.options.DebugFunc,
+		PythonMultilineValuesKeys:   f.options.PythonMultilineValuesKeys,
 		ReaderBufferSize:            f.options.ReaderBufferSize,
+		SpaceBeforeInlineComment:    f.options.SpaceBeforeInlineComment,
+		UnescapeValueCommentSymbols: f.options.UnescapeValueCommentSymbols,
+		UnescapeValueDoubleQuotes:   f.options.UnescapeValueDoubleQuotes,
 	})
 	if err = p.BOM(); err != nil {
 		return fmt.Errorf("BOM: %v", err)
@@ -472,7 +475,7 @@ func (f *File) parse(reader io.Reader) (err error) {
 			case IsErrDelimiterNotFound(err):
 				switch {
 				case f.options.AllowBooleanKeys:
-					kname, err := p.readValue(line, parserBufferSize)
+					kname, err := p.readValue(line, parserBufferSize, "")
 					if err != nil {
 						return err
 					}
@@ -501,7 +504,7 @@ func (f *File) parse(reader io.Reader) (err error) {
 			p.count++
 		}
 
-		value, err := p.readValue(line[offset:], parserBufferSize)
+		value, err := p.readValue(line[offset:], parserBufferSize, kname)
 		if err != nil {
 			return err
 		}
@@ -517,4 +520,16 @@ func (f *File) parse(reader io.Reader) (err error) {
 		lastRegularKey = key
 	}
 	return nil
+}
+
+func (p *parser) isPythonMultilineValueAllowed(kname string) bool {
+	if !p.options.AllowPythonMultilineValues {
+		return false
+	}
+
+	if p.options.AllowPythonMultilineValues && len(p.options.PythonMultilineValuesKeys) == 0 {
+		return true
+	}
+
+	return slices.Contains(p.options.PythonMultilineValuesKeys, kname)
 }
