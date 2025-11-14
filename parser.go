@@ -132,13 +132,14 @@ func readKeyName(delimiters string, in []byte) (string, int, error) {
 
 	// Check if key name surrounded by quotes.
 	var keyQuote string
-	if line[0] == '"' {
+	switch line[0] {
+	case '"':
 		if len(line) > 6 && line[0:3] == `"""` {
 			keyQuote = `"""`
 		} else {
 			keyQuote = `"`
 		}
-	} else if line[0] == '`' {
+	case '`':
 		keyQuote = "`"
 	}
 
